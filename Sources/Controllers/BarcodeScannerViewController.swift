@@ -1,10 +1,11 @@
 import UIKit
 import AVFoundation
+import Vision
 
 // MARK: - Delegates
 
 /// Delegate to handle the captured code.
-public protocol BarcodeScannerCodeDelegate: class {
+public protocol BarcodeScannerCodeDelegate: AnyObject {
   func scanner(
     _ controller: BarcodeScannerViewController,
     didCaptureCode code: String,
@@ -13,12 +14,12 @@ public protocol BarcodeScannerCodeDelegate: class {
 }
 
 /// Delegate to report errors.
-public protocol BarcodeScannerErrorDelegate: class {
+public protocol BarcodeScannerErrorDelegate: AnyObject {
   func scanner(_ controller: BarcodeScannerViewController, didReceiveError error: Error)
 }
 
 /// Delegate to dismiss barcode scanner when the close button has been pressed.
-public protocol BarcodeScannerDismissalDelegate: class {
+public protocol BarcodeScannerDismissalDelegate: AnyObject {
   func scannerDidDismiss(_ controller: BarcodeScannerViewController)
 }
 
@@ -47,10 +48,12 @@ open class BarcodeScannerViewController: UIViewController {
   /// and waits for the next reset action.
   public var isOneTimeSearch = true
 
+    public var hideFooter = false
+
   /// `AVCaptureMetadataOutput` metadata object types.
-  public var metadata = AVMetadataObject.ObjectType.barcodeScannerMetadata {
+  public var symbologies = VNDetectBarcodesRequest.supportedSymbologies {
     didSet {
-      cameraViewController.metadata = metadata
+        cameraViewController.symbologies = symbologies
     }
   }
 
@@ -96,12 +99,9 @@ open class BarcodeScannerViewController: UIViewController {
 
     add(childViewController: messageViewController)
     messageView.translatesAutoresizingMaskIntoConstraints = false
-    collapsedConstraints.activate()
 
-    cameraViewController.metadata = metadata
     cameraViewController.delegate = self
     add(childViewController: cameraViewController)
-
     view.bringSubviewToFront(messageView)
   }
 
@@ -154,11 +154,11 @@ open class BarcodeScannerViewController: UIViewController {
     }
 
     if newValue.state != .processing {
-      expandedConstraints.deactivate()
-      collapsedConstraints.activate()
+        expandedConstraints.deactivate()
+        collapsedConstraints.activate()
     } else {
-      collapsedConstraints.deactivate()
-      expandedConstraints.activate()
+        collapsedConstraints.deactivate()
+        expandedConstraints.activate()
     }
 
     messageViewController.status = newValue
@@ -235,7 +235,7 @@ private extension BarcodeScannerViewController {
       cameraView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       cameraView.bottomAnchor.constraint(
         equalTo: view.bottomAnchor,
-        constant: -BarcodeScannerViewController.footerHeight
+        constant: hideFooter ? 0 : -BarcodeScannerViewController.footerHeight
       )
     )
 
@@ -272,7 +272,7 @@ private extension BarcodeScannerViewController {
       messageView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
       messageView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
       messageView.heightAnchor.constraint(
-        equalToConstant: BarcodeScannerViewController.footerHeight
+        equalToConstant: hideFooter ? 0 : BarcodeScannerViewController.footerHeight
       )
     ]
   }
@@ -310,30 +310,22 @@ extension BarcodeScannerViewController: CameraViewControllerDelegate {
   }
 
   func cameraViewController(_ controller: CameraViewController,
-                            didOutput metadataObjects: [AVMetadataObject]) {
+                            didReceive barcodes: [VNBarcodeObservation]) {
     guard !locked && isVisible else { return }
-    guard !metadataObjects.isEmpty else { return }
 
-    guard
-      let metadataObj = metadataObjects[0] as? AVMetadataMachineReadableCodeObject,
-      var code = metadataObj.stringValue,
-      metadata.contains(metadataObj.type)
+    guard let barcode = barcodes.first else {
+        return
+    }
+
+    guard let code = barcode.payloadStringValue, symbologies.contains(barcode.symbology)
       else { return }
 
     if isOneTimeSearch {
       locked = true
     }
 
-    var rawType = metadataObj.type.rawValue
-
-    // UPC-A is an EAN-13 barcode with a zero prefix.
-    // See: https://stackoverflow.com/questions/22767584/ios7-barcode-scanner-api-adds-a-zero-to-upca-barcode-format
-    if metadataObj.type == AVMetadataObject.ObjectType.ean13 && code.hasPrefix("0") {
-      code = String(code.dropFirst())
-      rawType = AVMetadataObject.ObjectType.upca.rawValue
-    }
-
-    codeDelegate?.scanner(self, didCaptureCode: code, type: rawType)
+    let type = barcode.symbology.rawValue
+    codeDelegate?.scanner(self, didCaptureCode: code, type: type)
     animateFlash(whenProcessing: isOneTimeSearch)
   }
 }

@@ -1,15 +1,16 @@
 import UIKit
 import AVFoundation
+import Vision
 
 /// Delegate to handle camera setup and video capturing.
-protocol CameraViewControllerDelegate: class {
+protocol CameraViewControllerDelegate: AnyObject {
   func cameraViewControllerDidSetupCaptureSession(_ controller: CameraViewController)
   func cameraViewControllerDidFailToSetupCaptureSession(_ controller: CameraViewController)
   func cameraViewController(_ controller: CameraViewController, didReceiveError error: Error)
   func cameraViewControllerDidTapSettingsButton(_ controller: CameraViewController)
   func cameraViewController(
     _ controller: CameraViewController,
-    didOutput metadataObjects: [AVMetadataObject]
+    didReceive barcodes: [VNBarcodeObservation]
   )
 }
 
@@ -24,8 +25,16 @@ public final class CameraViewController: UIViewController {
       cameraButton.isHidden = showsCameraButton
     }
   }
-  /// `AVCaptureMetadataOutput` metadata object types.
-  var metadata = [AVMetadataObject.ObjectType]()
+
+    var symbologies = [VNBarcodeSymbology]() {
+        didSet {
+            detectBarcodeRequest.symbologies = symbologies
+        }
+    }
+
+    public var useFullScreenFocus = false
+    public var captureSessionPreset: AVCaptureSession.Preset = .high
+    public var codeConfidence: Float = 0.8
 
   // MARK: - UI proterties
 
@@ -33,6 +42,7 @@ public final class CameraViewController: UIViewController {
   public private(set) lazy var focusView: UIView = self.makeFocusView()
   /// Button to change torch mode.
   public private(set) lazy var flashButton: UIButton = .init(type: .custom)
+
   /// Button that opens settings to allow camera usage.
   public private(set) lazy var settingsButton: UIButton = self.makeSettingsButton()
   // Button to switch between front and back camera.
@@ -77,6 +87,19 @@ public final class CameraViewController: UIViewController {
   private var backCameraDevice: AVCaptureDevice? {
     return AVCaptureDevice.default(for: .video)
   }
+
+    private lazy var detectBarcodeRequest = VNDetectBarcodesRequest { [weak self] request, error in
+        guard let self = self else {
+            return
+        }
+
+        guard let error = error else {
+            self.processClassification(request)
+            return
+        }
+
+        self.delegate?.cameraViewController(self, didReceiveError: error)
+    }
 
   // MARK: - Initialization
 
@@ -237,6 +260,7 @@ public final class CameraViewController: UIViewController {
       captureDevice = device
       // Swap capture device inputs
       captureSession.beginConfiguration()
+        captureSession.sessionPreset = captureSessionPreset
       if let currentInput = captureSession.inputs.first as? AVCaptureDeviceInput {
         captureSession.removeInput(currentInput)
       }
@@ -254,10 +278,10 @@ public final class CameraViewController: UIViewController {
       return
     }
 
-    let output = AVCaptureMetadataOutput()
+    let output = AVCaptureVideoDataOutput()
+    output.videoSettings = [kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA)]
+    output.setSampleBufferDelegate(self, queue: DispatchQueue.global(qos: DispatchQoS.QoSClass.default))
     captureSession.addOutput(output)
-    output.setMetadataObjectsDelegate(self, queue: DispatchQueue.main)
-    output.metadataObjectTypes = metadata
     videoPreviewLayer?.session = captureSession
 
     view.setNeedsLayout()
@@ -342,6 +366,10 @@ private extension CameraViewController {
       cameraButton.heightAnchor.constraint(equalToConstant: 48),
       cameraButton.trailingAnchor.constraint(equalTo: flashButton.trailingAnchor)
     )
+
+    guard useFullScreenFocus == false else {
+        return
+    }
 
     setupFocusViewConstraints()
   }
@@ -429,11 +457,42 @@ private extension CameraViewController {
 }
 
 // MARK: - AVCaptureMetadataOutputObjectsDelegate
+extension CameraViewController: AVCaptureVideoDataOutputSampleBufferDelegate {
+    public func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
+        guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
 
-extension CameraViewController: AVCaptureMetadataOutputObjectsDelegate {
-  public func metadataOutput(_ output: AVCaptureMetadataOutput,
-                             didOutput metadataObjects: [AVMetadataObject],
-                             from connection: AVCaptureConnection) {
-    delegate?.cameraViewController(self, didOutput: metadataObjects)
-  }
+        let imageRequestHandler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, orientation: .right)
+
+        do {
+            try imageRequestHandler.perform([detectBarcodeRequest])
+        } catch {
+            print(error)
+        }
+    }
+}
+
+extension CameraViewController {
+    func processClassification(_ request: VNRequest) {
+        guard let barcodes = request.results else { return }
+        DispatchQueue.main.async {[weak self] in
+            guard let self = self else {
+                /// FIXME: Show error
+                return
+            }
+
+            if self.captureSession.isRunning {
+                var validBarcodes = [VNBarcodeObservation]()
+                for barcode in barcodes {
+                    guard let code = barcode as? VNBarcodeObservation,
+                          code.confidence > self.codeConfidence
+                    else {
+                        return
+                    }
+
+                    validBarcodes.append(code)
+                }
+                self.delegate?.cameraViewController(self, didReceive: validBarcodes)
+            }
+        }
+    }
 }
