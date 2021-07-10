@@ -60,7 +60,7 @@ open class BarcodeScannerViewController: UIViewController {
     // MARK: - Private properties
 
     /// Flag to lock session from capturing.
-    private var locked = false
+    private var isLocked = false
     /// Flag to check if layout constraints has been activated.
     private var constraintsActivated = false
     /// Flag to check if view controller is currently on screen
@@ -182,7 +182,7 @@ open class BarcodeScannerViewController: UIViewController {
 
     /// Resets the current state.
     private func resetState() {
-        locked = status.state == .processing && isOneTimeSearch
+        isLocked = status.state == .processing && isOneTimeSearch
         if status.state == .scanning {
             cameraViewController.startCapturing()
         } else {
@@ -311,7 +311,7 @@ extension BarcodeScannerViewController: CameraViewControllerDelegate {
 
     func cameraViewController(_ controller: CameraViewController,
                               didReceive barcodes: [VNBarcodeObservation]) {
-        guard !locked && isVisible else { return }
+        guard !isLocked && isVisible else { return }
 
         guard let barcode = barcodes.first else {
             return
@@ -321,11 +321,10 @@ extension BarcodeScannerViewController: CameraViewControllerDelegate {
         else { return }
 
         if isOneTimeSearch {
-            locked = true
+            isLocked = true
         }
 
         let type = barcode.symbology.rawValue
         codeDelegate?.scanner(self, didCaptureCode: code, type: type)
-        animateFlash(whenProcessing: isOneTimeSearch)
     }
 }
